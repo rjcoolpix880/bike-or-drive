@@ -1,40 +1,180 @@
 #include <pebble.h>
 
 static Window *s_main_window;
-static TextLayer *s_time_layer;
-static TextLayer *s_date_layer;
-static TextLayer *s_weather_layer;
+static Layer *s_canvas_layer;
+static char s_bike_decision[8] = "WAIT";
+static char s_update_time[32] = "Loading...";
+static uint8_t s_precip_data[24];
+static bool s_has_data = false;
+static bool s_is_connected = true;
 
-// Custom fonts
-static GFont s_time_font;
-static GFont s_date_font;
+// Animation logic
+static AppTimer *s_anim_timer;
+static int s_anim_progress = 100; // 0 to 100
 
-// Battery
-static Layer *s_battery_layer;
-static int s_battery_level;
+static float ease_out_back(float t) {
+  float c1 = 1.70158f;
+  float c3 = c1 + 1.0f;
+  return 1.0f + c3 * (t - 1.0f)*(t - 1.0f)*(t - 1.0f) + c1 * (t - 1.0f)*(t - 1.0f);
+}
 
-// Bluetooth
-static BitmapLayer *s_bt_icon_layer;
-static GBitmap *s_bt_icon_bitmap;
+static void anim_timer_callback(void *data) {
+  s_anim_progress += 5;
+  if (s_anim_progress > 100) s_anim_progress = 100;
+  layer_mark_dirty(s_canvas_layer);
+  if (s_anim_progress < 100) {
+    s_anim_timer = app_timer_register(33, anim_timer_callback, NULL);
+  } else {
+    s_anim_timer = NULL;
+  }
+}
 
-static void update_time() {
+static void start_animation() {
+  s_anim_progress = 0;
+  if (s_anim_timer) {
+    app_timer_cancel(s_anim_timer);
+  }
+  s_anim_timer = app_timer_register(33, anim_timer_callback, NULL);
+}
+
+static void canvas_update_proc(Layer *layer, GContext *ctx) {
+  GRect bounds = layer_get_bounds(layer);
+
+  // Background black
+  graphics_context_set_fill_color(ctx, GColorBlack);
+  graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
+  // If no connection, draw red X
+  if (!s_is_connected) {
+    graphics_context_set_text_color(ctx, GColorRed);
+    graphics_draw_text(ctx, "X", fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD), GRect(0, 0, bounds.size.w, 20), 
+                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+  }
+
+  if (!s_has_data) {
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, "Loading...", fonts_get_system_font(FONT_KEY_GOTHIC_18), GRect(0, bounds.size.h/2 - 10, bounds.size.w, 30),
+                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+    return;
+  }
+
+  // Draw Decision
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, s_bike_decision, fonts_get_system_font(FONT_KEY_BITHAM_42_LIGHT), 
+                     GRect(0, 5, bounds.size.w, 50),
+                     GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+
+  // Graph Area
+  int top_margin = 55;
+  int bottom_margin = 42;
+  int graph_height = bounds.size.h - bottom_margin - top_margin;
+  
+  // 50% threshold dotted
+  int y50 = top_margin + (graph_height / 2);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  for (int dx = 0; dx < bounds.size.w; dx += 4) {
+    graphics_fill_rect(ctx, GRect(dx, y50, 2, 1), 0, GCornerNone);
+  }
+
+  int bar_width = bounds.size.w / 24;
+  float ease_val = ease_out_back(s_anim_progress / 100.0f);
+
+  for (int i=0; i<24; i++) {
+    int hour = i + 1; // 1 to 24 (where 24 is midnight)
+    int precip = (int)s_precip_data[i];
+    
+    int bHeight = (precip * graph_height) / 100;
+    bHeight = (int)(bHeight * ease_val);
+    if (bHeight < 0) bHeight = 0;
+    
+    int x = i * bar_width;
+    int w = bar_width - 1; // 1px gap
+    int y = top_margin + graph_height - bHeight;
+    
+    if (bHeight > 0) {
+      if (hour == 9 || hour == 17) {
+        graphics_context_set_fill_color(ctx, GColorWhite);
+      } else {
+        graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorDarkGray, GColorWhite));
+      }
+      graphics_fill_rect(ctx, GRect(x, y, w, bHeight), 0, GCornerNone);
+    }
+    
+    // x-axis labels at 6a, 12p, 6p, 12a
+    if (hour % 6 == 0) {
+      int display_h = hour % 12;
+      display_h = display_h == 0 ? 12 : display_h;
+      char const *ampm = hour < 12 ? "a" : ((hour == 24) ? "a" : "p");
+      
+      static char label_str[8];
+      snprintf(label_str, sizeof(label_str), "%d%s", display_h, ampm);
+      
+      GSize text_size = graphics_text_layout_get_content_size(label_str, fonts_get_system_font(FONT_KEY_GOTHIC_18), GRect(0,0,100,100), GTextOverflowModeWordWrap, GTextAlignmentLeft);
+      int label_width = text_size.w;
+      
+      int label_x = x + (w / 2) - (label_width / 2);
+      if (label_x < 0) label_x = 0;
+      if (label_x + label_width > bounds.size.w) label_x = bounds.size.w - label_width;
+      
+      graphics_context_set_text_color(ctx, GColorWhite);
+      graphics_draw_text(ctx, label_str, fonts_get_system_font(FONT_KEY_GOTHIC_18), 
+                         GRect(label_x, bounds.size.h - bottom_margin, label_width + 5, 20),
+                         GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
+    }
+  }
+
+  // Current Time Vertical Dotted Line
   time_t temp = time(NULL);
   struct tm *tick_time = localtime(&temp);
+  int ch = tick_time->tm_hour; // 0 to 23
+  int cm = tick_time->tm_min;
+  
+  int curCol = ch - 1;
+  if (curCol < 0) curCol = 23;
+  
+  int current_line_x = curCol * bar_width + (cm * bar_width / 60);
+  graphics_context_set_fill_color(ctx, GColorWhite);
+  for (int dy = top_margin; dy < top_margin + graph_height; dy += 4) {
+    graphics_fill_rect(ctx, GRect(current_line_x, dy, 1, 2), 0, GCornerNone);
+  }
 
-  static char s_time_buffer[8];
-  strftime(s_time_buffer, sizeof(s_time_buffer), clock_is_24h_style() ?
-                                                    "%H:%M" : "%I:%M", tick_time);
-  text_layer_set_text(s_time_layer, s_time_buffer);
+  // Update Time String
+  graphics_context_set_text_color(ctx, GColorWhite);
+  graphics_draw_text(ctx, s_update_time, fonts_get_system_font(FONT_KEY_GOTHIC_18), 
+                     GRect(0, bounds.size.h - 22, bounds.size.w, 20),
+                     GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+}
 
-  static char s_date_buffer[16];
-  strftime(s_date_buffer, sizeof(s_date_buffer), "%a %b %d", tick_time);
-  text_layer_set_text(s_date_layer, s_date_buffer);
+static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
+  Tuple *decision_tuple = dict_find(iterator, MESSAGE_KEY_DECISION);
+  Tuple *precip_tuple = dict_find(iterator, MESSAGE_KEY_PRECIP_DATA);
+  Tuple *update_tuple = dict_find(iterator, MESSAGE_KEY_UPDATE_TIME);
+
+  if (decision_tuple) {
+    snprintf(s_bike_decision, sizeof(s_bike_decision), "%s", decision_tuple->value->cstring);
+  }
+  if (update_tuple) {
+    snprintf(s_update_time, sizeof(s_update_time), "%s", update_tuple->value->cstring);
+  }
+  if (precip_tuple) {
+    memcpy(s_precip_data, precip_tuple->value->data, precip_tuple->length < 24 ? precip_tuple->length : 24);
+    s_has_data = true;
+    start_animation();
+  }
+}
+
+static void inbox_dropped_callback(AppMessageResult reason, void *context) { }
+static void outbox_failed_callback(DictionaryIterator *iterator, AppMessageResult reason, void *context) { }
+static void outbox_sent_callback(DictionaryIterator *iterator, void *context) { }
+
+static void bluetooth_callback(bool connected) {
+  s_is_connected = connected;
+  layer_mark_dirty(s_canvas_layer);
+  if (!connected) vibes_double_pulse();
 }
 
 static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
-  update_time();
-
-  // Get weather update every 30 minutes
+  layer_mark_dirty(s_canvas_layer); // update time line
   if (tick_time->tm_min % 30 == 0) {
     DictionaryIterator *iter;
     app_message_outbox_begin(&iter);
@@ -43,150 +183,20 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
   }
 }
 
-static void battery_callback(BatteryChargeState state) {
-  s_battery_level = state.charge_percent;
-  layer_mark_dirty(s_battery_layer);
-}
-
-static void battery_update_proc(Layer *layer, GContext *ctx) {
-  GRect bounds = layer_get_bounds(layer);
-
-  // Find the width of the bar (inside the border)
-  int bar_width = ((s_battery_level * (bounds.size.w - 4)) / 100);
-
-  // Draw the border
-  graphics_context_set_stroke_color(ctx, GColorWhite);
-  graphics_draw_round_rect(ctx, bounds, 2);
-
-  // Choose color based on battery level
-  GColor bar_color;
-  if (s_battery_level <= 20) {
-    bar_color = PBL_IF_COLOR_ELSE(GColorRed, GColorWhite);
-  } else if (s_battery_level <= 40) {
-    bar_color = PBL_IF_COLOR_ELSE(GColorChromeYellow, GColorWhite);
-  } else {
-    bar_color = PBL_IF_COLOR_ELSE(GColorGreen, GColorWhite);
-  }
-
-  // Draw the filled bar inside the border
-  graphics_context_set_fill_color(ctx, bar_color);
-  graphics_fill_rect(ctx, GRect(2, 2, bar_width, bounds.size.h - 4), 1, GCornerNone);
-}
-
-static void bluetooth_callback(bool connected) {
-  // Show icon if disconnected
-  layer_set_hidden(bitmap_layer_get_layer(s_bt_icon_layer), connected);
-
-  if (!connected) {
-    vibes_double_pulse();
-  }
-}
-
-// AppMessage callbacks
-static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
-  // Read tuples for weather data
-  Tuple *temp_tuple = dict_find(iterator, MESSAGE_KEY_TEMPERATURE);
-  Tuple *conditions_tuple = dict_find(iterator, MESSAGE_KEY_CONDITIONS);
-
-  // If weather data is available, use it
-  if (temp_tuple && conditions_tuple) {
-    static char temperature_buffer[8];
-    static char conditions_buffer[32];
-    static char weather_layer_buffer[42];
-
-    snprintf(temperature_buffer, sizeof(temperature_buffer), "%d°C", (int)temp_tuple->value->int32);
-    snprintf(conditions_buffer, sizeof(conditions_buffer), "%s", conditions_tuple->value->cstring);
-    snprintf(weather_layer_buffer, sizeof(weather_layer_buffer), "%s %s", temperature_buffer, conditions_buffer);
-    text_layer_set_text(s_weather_layer, weather_layer_buffer);
-  }
-}
-
-static void inbox_dropped_callback(AppMessageResult reason, void *context) {
-  APP_LOG(APP_LOG_LEVEL_ERROR, "Message dropped!");
-}
-
-static void outbox_failed_callback(DictionaryIterator *iterator, AppMessageResult reason, void *context) {
-  APP_LOG(APP_LOG_LEVEL_ERROR, "Outbox send failed!");
-}
-
-static void outbox_sent_callback(DictionaryIterator *iterator, void *context) {
-  APP_LOG(APP_LOG_LEVEL_INFO, "Outbox send success!");
-}
-
 static void main_window_load(Window *window) {
   Layer *window_layer = window_get_root_layer(window);
   GRect bounds = layer_get_bounds(window_layer);
 
-  // Load custom fonts
-  s_time_font = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_JERSEY_56));
-  s_date_font = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_JERSEY_24));
-
-  // Center the time + date block vertically
-  int date_height = 30;
-  int block_height = 56 + date_height;
-  int time_y = (bounds.size.h / 2) - (block_height / 2) - 10;
-  int date_y = time_y + 56;
-
-  // Create the time TextLayer
-  s_time_layer = text_layer_create(
-      GRect(0, time_y, bounds.size.w, 60));
-  text_layer_set_background_color(s_time_layer, GColorClear);
-  text_layer_set_text_color(s_time_layer, GColorWhite);
-  text_layer_set_font(s_time_layer, s_time_font);
-  text_layer_set_text_alignment(s_time_layer, GTextAlignmentCenter);
-
-  // Create the date TextLayer — just below the time
-  s_date_layer = text_layer_create(
-      GRect(0, date_y, bounds.size.w, 30));
-  text_layer_set_background_color(s_date_layer, GColorClear);
-  text_layer_set_text_color(s_date_layer, GColorWhite);
-  text_layer_set_font(s_date_layer, s_date_font);
-  text_layer_set_text_alignment(s_date_layer, GTextAlignmentCenter);
-
-  // Create weather TextLayer — aligned to the bottom of the screen
-  int weather_y = bounds.size.h - PBL_IF_ROUND_ELSE(40, 30);
-  s_weather_layer = text_layer_create(
-      GRect(0, weather_y, bounds.size.w, 25));
-  text_layer_set_background_color(s_weather_layer, GColorClear);
-  text_layer_set_text_color(s_weather_layer, GColorWhite);
-  text_layer_set_font(s_weather_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
-  text_layer_set_text_alignment(s_weather_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_weather_layer, "Loading...");
-
-  // Create battery meter Layer — visible bar near the top
-  int bar_width = bounds.size.w / 2;
-  int bar_x = (bounds.size.w - bar_width) / 2;
-  int bar_y = PBL_IF_ROUND_ELSE(bounds.size.h / 8, bounds.size.h / 28);
-  s_battery_layer = layer_create(GRect(bar_x, bar_y, bar_width, 8));
-  layer_set_update_proc(s_battery_layer, battery_update_proc);
-
-  // Create the Bluetooth icon GBitmap
-  s_bt_icon_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_BT_ICON);
-  int bt_y = bar_y + 12;
-  s_bt_icon_layer = bitmap_layer_create(GRect((bounds.size.w - 30) / 2, bt_y, 30, 30));
-  bitmap_layer_set_bitmap(s_bt_icon_layer, s_bt_icon_bitmap);
-  bitmap_layer_set_compositing_mode(s_bt_icon_layer, GCompOpSet);
-
-  // Add layers to the Window
-  layer_add_child(window_layer, text_layer_get_layer(s_time_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_date_layer));
-  layer_add_child(window_layer, text_layer_get_layer(s_weather_layer));
-  layer_add_child(window_layer, s_battery_layer);
-  layer_add_child(window_layer, bitmap_layer_get_layer(s_bt_icon_layer));
-
-  // Show the correct state of the BT connection from the start
-  bluetooth_callback(connection_service_peek_pebble_app_connection());
+  s_canvas_layer = layer_create(bounds);
+  layer_set_update_proc(s_canvas_layer, canvas_update_proc);
+  layer_add_child(window_layer, s_canvas_layer);
 }
 
 static void main_window_unload(Window *window) {
-  text_layer_destroy(s_time_layer);
-  text_layer_destroy(s_date_layer);
-  text_layer_destroy(s_weather_layer);
-  fonts_unload_custom_font(s_time_font);
-  fonts_unload_custom_font(s_date_font);
-  layer_destroy(s_battery_layer);
-  gbitmap_destroy(s_bt_icon_bitmap);
-  bitmap_layer_destroy(s_bt_icon_layer);
+  layer_destroy(s_canvas_layer);
+  if (s_anim_timer) {
+    app_timer_cancel(s_anim_timer);
+  }
 }
 
 static void init() {
@@ -198,27 +208,17 @@ static void init() {
   });
   window_stack_push(s_main_window, true);
 
-  update_time();
-
   tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
-
-  battery_state_service_subscribe(battery_callback);
-  battery_callback(battery_state_service_peek());
-
   connection_service_subscribe((ConnectionHandlers) {
     .pebble_app_connection_handler = bluetooth_callback
   });
+  bluetooth_callback(connection_service_peek_pebble_app_connection());
 
-  // Register AppMessage callbacks
   app_message_register_inbox_received(inbox_received_callback);
   app_message_register_inbox_dropped(inbox_dropped_callback);
   app_message_register_outbox_failed(outbox_failed_callback);
   app_message_register_outbox_sent(outbox_sent_callback);
-
-  // Open AppMessage
-  const int inbox_size = 128;
-  const int outbox_size = 128;
-  app_message_open(inbox_size, outbox_size);
+  app_message_open(256, 128); // larger inbox for byte array data
 }
 
 static void deinit() {

@@ -13,31 +13,14 @@
         "displayName": "Tutorial Watchface",
         "enableMultiJS": true,
         "messageKeys": [
-            "TEMPERATURE",
-            "CONDITIONS",
+            "DECISION",
+            "PRECIP_DATA",
+            "UPDATE_TIME",
             "REQUEST_WEATHER"
         ],
         "projectType": "native",
         "resources": {
-            "media": [
-                {
-                    "compatibility": "2.7",
-                    "file": "fonts/Jersey10-Regular.ttf",
-                    "name": "FONT_JERSEY_56",
-                    "type": "font"
-                },
-                {
-                    "compatibility": "2.7",
-                    "file": "fonts/Jersey10-Regular.ttf",
-                    "name": "FONT_JERSEY_24",
-                    "type": "font"
-                },
-                {
-                    "file": "images/bt-icon.png",
-                    "name": "IMAGE_BT_ICON",
-                    "type": "bitmap"
-                }
-            ]
+            "media": []
         },
         "sdkVersion": "3",
         "targetPlatforms": [

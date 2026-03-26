@@ -7,6 +7,12 @@ static char s_update_time[32] = "Loading...";
 static uint8_t s_precip_data[24];
 static bool s_has_data = false;
 static bool s_is_connected = true;
+static int s_current_temp = 0;
+
+static Window *s_temp_window;
+static TextLayer *s_temp_text_layer;
+static TextLayer *s_clothes_text_layer;
+static char s_temp_str[16];
 
 // Animation logic
 static AppTimer *s_anim_timer;
@@ -145,16 +151,83 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
                      GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
 }
 
+static void temp_window_load(Window *window) {
+  Layer *window_layer = window_get_root_layer(window);
+  GRect bounds = layer_get_bounds(window_layer);
+
+  window_set_background_color(window, GColorBlack);
+
+  s_temp_text_layer = text_layer_create(GRect(0, 30, bounds.size.w, 50));
+  text_layer_set_background_color(s_temp_text_layer, GColorClear);
+  text_layer_set_text_color(s_temp_text_layer, GColorWhite);
+  text_layer_set_font(s_temp_text_layer, fonts_get_system_font(FONT_KEY_BITHAM_42_LIGHT));
+  text_layer_set_text_alignment(s_temp_text_layer, GTextAlignmentCenter);
+  
+  snprintf(s_temp_str, sizeof(s_temp_str), "%d°F", s_current_temp);
+  text_layer_set_text(s_temp_text_layer, s_temp_str);
+  layer_add_child(window_layer, text_layer_get_layer(s_temp_text_layer));
+
+  s_clothes_text_layer = text_layer_create(GRect(10, 90, bounds.size.w - 20, 60));
+  text_layer_set_background_color(s_clothes_text_layer, GColorClear);
+  text_layer_set_text_color(s_clothes_text_layer, GColorWhite);
+  text_layer_set_font(s_clothes_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  text_layer_set_text_alignment(s_clothes_text_layer, GTextAlignmentCenter);
+  
+  const char* clothes_str = "Unknown";
+  if (s_current_temp > 60) {
+    clothes_str = "T-Shirt";
+  } else if (s_current_temp > 50) {
+    clothes_str = "Long Sleeve";
+  } else if (s_current_temp > 40) {
+    clothes_str = "Jacket";
+  } else if (s_current_temp >= 30) {
+    clothes_str = "Gloves";
+  } else {
+    clothes_str = "Gloves, Scarf, and Hat";
+  }
+  
+  text_layer_set_text(s_clothes_text_layer, clothes_str);
+  layer_add_child(window_layer, text_layer_get_layer(s_clothes_text_layer));
+}
+
+static void temp_window_unload(Window *window) {
+  text_layer_destroy(s_temp_text_layer);
+  text_layer_destroy(s_clothes_text_layer);
+}
+
+static void temp_window_push() {
+  if (!s_temp_window) {
+    s_temp_window = window_create();
+    window_set_window_handlers(s_temp_window, (WindowHandlers) {
+      .load = temp_window_load,
+      .unload = temp_window_unload
+    });
+  }
+  window_stack_push(s_temp_window, true);
+}
+
+static void up_click_handler(ClickRecognizerRef recognizer, void *context) {
+  temp_window_push();
+}
+
+static void click_config_provider(void *context) {
+  window_single_click_subscribe(BUTTON_ID_UP, up_click_handler);
+}
+
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
   Tuple *decision_tuple = dict_find(iterator, MESSAGE_KEY_DECISION);
   Tuple *precip_tuple = dict_find(iterator, MESSAGE_KEY_PRECIP_DATA);
   Tuple *update_tuple = dict_find(iterator, MESSAGE_KEY_UPDATE_TIME);
+  Tuple *temp_tuple = dict_find(iterator, MESSAGE_KEY_CURRENT_TEMP);
 
   if (decision_tuple) {
     snprintf(s_bike_decision, sizeof(s_bike_decision), "%s", decision_tuple->value->cstring);
   }
   if (update_tuple) {
     snprintf(s_update_time, sizeof(s_update_time), "%s", update_tuple->value->cstring);
+  }
+  if (temp_tuple) {
+    s_current_temp = temp_tuple->value->int32;
   }
   if (precip_tuple) {
     memcpy(s_precip_data, precip_tuple->value->data, precip_tuple->length < 24 ? precip_tuple->length : 24);
@@ -206,6 +279,7 @@ static void init() {
     .load = main_window_load,
     .unload = main_window_unload
   });
+  window_set_click_config_provider(s_main_window, click_config_provider);
   window_stack_push(s_main_window, true);
 
   tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
@@ -223,6 +297,9 @@ static void init() {
 
 static void deinit() {
   window_destroy(s_main_window);
+  if (s_temp_window) {
+    window_destroy(s_temp_window);
+  }
 }
 
 int main(void) {

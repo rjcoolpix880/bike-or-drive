@@ -12,7 +12,9 @@ function locationSuccess(pos) {
   var url = 'https://api.open-meteo.com/v1/forecast?' +
       'latitude=' + pos.coords.latitude +
       '&longitude=' + pos.coords.longitude +
+      '&current=temperature_2m' +
       '&hourly=precipitation_probability' +
+      '&temperature_unit=fahrenheit' +
       '&timezone=auto' +
       '&forecast_hours=25';
 
@@ -73,10 +75,13 @@ function locationSuccess(pos) {
       
       var updateTimeStr = h + ':' + minStr + ampm + ' Today';
 
+      var currentTemp = json.current && json.current.temperature_2m !== undefined ? Math.round(json.current.temperature_2m) : 0;
+
       var dictionary = {
         'DECISION': bikeDecision,
         'PRECIP_DATA': precipData,
-        'UPDATE_TIME': updateTimeStr
+        'UPDATE_TIME': updateTimeStr,
+        'CURRENT_TEMP': currentTemp
       };
 
       Pebble.sendAppMessage(dictionary,

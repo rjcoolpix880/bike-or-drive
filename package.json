@@ -16,7 +16,8 @@
             "DECISION",
             "PRECIP_DATA",
             "UPDATE_TIME",
-            "REQUEST_WEATHER"
+            "REQUEST_WEATHER",
+            "CURRENT_TEMP"
         ],
         "projectType": "native",
         "resources": {

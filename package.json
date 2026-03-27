@@ -1,6 +1,8 @@
 {
     "author": "RJ",
-    "dependencies": {},
+    "dependencies": {
+        "pebble-clay": "^1.0.5"
+    },
     "keywords": [
         "pebble-app"
     ],
@@ -17,7 +19,10 @@
             "PRECIP_DATA",
             "UPDATE_TIME",
             "REQUEST_WEATHER",
-            "CURRENT_TEMP"
+            "CURRENT_TEMP",
+            "COMMUTE_MORNING",
+            "COMMUTE_EVENING",
+            "PRECIP_THRESHOLD"
         ],
         "projectType": "native",
         "resources": {

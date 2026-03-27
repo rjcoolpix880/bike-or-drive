@@ -9,6 +9,8 @@ static uint8_t s_precip_data[24];
 static bool s_has_data = false;
 static bool s_is_connected = true;
 static int s_current_temp = 0;
+static int s_commute_morning = 9;
+static int s_commute_evening = 17;
 
 static Window *s_temp_window;
 static TextLayer *s_temp_text_layer;
@@ -99,7 +101,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     int y = top_margin + graph_height - bHeight;
     
     if (bHeight > 0) {
-      if (hour == 9 || hour == 17) {
+      if ((s_commute_morning > 0 && hour == s_commute_morning) || (s_commute_evening > 0 && hour == s_commute_evening)) {
         graphics_context_set_fill_color(ctx, GColorWhite);
       } else {
         graphics_context_set_fill_color(ctx, PBL_IF_COLOR_ELSE(GColorDarkGray, GColorWhite));
@@ -222,6 +224,8 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   Tuple *precip_tuple = dict_find(iterator, MESSAGE_KEY_PRECIP_DATA);
   Tuple *update_tuple = dict_find(iterator, MESSAGE_KEY_UPDATE_TIME);
   Tuple *temp_tuple = dict_find(iterator, MESSAGE_KEY_CURRENT_TEMP);
+  Tuple *morn_tuple = dict_find(iterator, MESSAGE_KEY_COMMUTE_MORNING);
+  Tuple *eve_tuple = dict_find(iterator, MESSAGE_KEY_COMMUTE_EVENING);
 
   if (decision_tuple) {
     snprintf(s_bike_decision, sizeof(s_bike_decision), "%s", decision_tuple->value->cstring);
@@ -232,6 +236,12 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   }
   if (temp_tuple) {
     s_current_temp = temp_tuple->value->int32;
+  }
+  if (morn_tuple) {
+    s_commute_morning = morn_tuple->value->int32;
+  }
+  if (eve_tuple) {
+    s_commute_evening = eve_tuple->value->int32;
   }
   if (precip_tuple) {
     memcpy(s_precip_data, precip_tuple->value->data, precip_tuple->length < 24 ? precip_tuple->length : 24);

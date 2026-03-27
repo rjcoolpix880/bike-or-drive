@@ -1,3 +1,7 @@
+var Clay = require('pebble-clay');
+var clayConfig = require('./config');
+var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+
 // Helper function for XMLHttpRequest
 var xhrRequest = function (url, type, callback) {
   var xhr = new XMLHttpRequest();
@@ -10,36 +14,43 @@ var xhrRequest = function (url, type, callback) {
 
 function locationSuccess(pos) {
   var url = 'https://api.open-meteo.com/v1/forecast?' +
-      'latitude=' + pos.coords.latitude +
-      '&longitude=' + pos.coords.longitude +
-      '&current=temperature_2m' +
-      '&hourly=precipitation_probability' +
-      '&temperature_unit=fahrenheit' +
-      '&timezone=auto' +
-      '&forecast_hours=25';
+    'latitude=' + pos.coords.latitude +
+    '&longitude=' + pos.coords.longitude +
+    '&current=temperature_2m' +
+    '&hourly=precipitation_probability' +
+    '&temperature_unit=fahrenheit' +
+    '&timezone=auto' +
+    '&forecast_hours=25';
 
   xhrRequest(url, 'GET',
-    function(responseText) {
+    function (responseText) {
       var json = JSON.parse(responseText);
       var hourlyTime = json.hourly && json.hourly.time ? json.hourly.time : [];
       var hourlyPrecip = json.hourly && json.hourly.precipitation_probability ? json.hourly.precipitation_probability : [];
 
-      var threshold = 50;
+      var morningStr = localStorage.getItem('COMMUTE_MORNING');
+      var eveningStr = localStorage.getItem('COMMUTE_EVENING');
+      var thresholdStr = localStorage.getItem('PRECIP_THRESHOLD');
+
+      var morningHour = morningStr !== null ? parseInt(morningStr, 10) : 9;
+      var eveningHour = eveningStr !== null ? parseInt(eveningStr, 10) : 17;
+      var threshold = thresholdStr !== null ? parseInt(thresholdStr, 10) : 50;
+
       var bikeDecision = "BIKE";
 
-      var index9 = -1;
-      var index17 = -1;
+      var indexMorning = -1;
+      var indexEvening = -1;
 
       // Initialize the 24-element precip data array for Pebble (C side)
       var precipData = [];
-      for(var k=0; k<24; k++) { precipData.push(0); }
+      for (var k = 0; k < 24; k++) { precipData.push(0); }
 
       for (var j = 0; j < Math.min(25, hourlyTime.length); j++) {
         var hourStr = hourlyTime[j].slice(11, 13);
         var hourNum = parseInt(hourStr, 10);
-        
-        if (hourNum === 9 && index9 === -1) index9 = j;
-        if (hourNum === 17 && index17 === -1) index17 = j;
+
+        if (morningHour > 0 && hourNum === morningHour && indexMorning === -1) indexMorning = j;
+        if (eveningHour > 0 && hourNum === eveningHour && indexEvening === -1) indexEvening = j;
 
         // Map into the 24-element precipData array using hour - 1 (0 to 23).
         var colIndex = hourNum - 1;
@@ -47,13 +58,13 @@ function locationSuccess(pos) {
 
         // Store precipitation at this index.
         if (j < hourlyPrecip.length) {
-            precipData[colIndex] = hourlyPrecip[j];
+          precipData[colIndex] = hourlyPrecip[j];
         }
       }
 
       var checkIndices = [];
-      if (index9 !== -1) { checkIndices.push(index9 - 1, index9, index9 + 1); }
-      if (index17 !== -1) { checkIndices.push(index17 - 1, index17, index17 + 1); }
+      if (indexMorning !== -1) { checkIndices.push(indexMorning - 1, indexMorning, indexMorning + 1); }
+      if (indexEvening !== -1) { checkIndices.push(indexEvening - 1, indexEvening, indexEvening + 1); }
 
       for (var i = 0; i < checkIndices.length; i++) {
         var idx = checkIndices[i];
@@ -64,7 +75,7 @@ function locationSuccess(pos) {
           }
         }
       }
-      
+
       var now = new Date();
       var h = now.getHours();
       var ampm = h >= 12 ? "p" : "a";
@@ -72,7 +83,7 @@ function locationSuccess(pos) {
       h = h ? h : 12;
       var m = now.getMinutes();
       var minStr = m < 10 ? "0" + m : m;
-      
+
       var updateTimeStr = h + ':' + minStr + ampm + ' Today';
 
       var currentTemp = json.current && json.current.temperature_2m !== undefined ? Math.round(json.current.temperature_2m) : 0;
@@ -81,14 +92,16 @@ function locationSuccess(pos) {
         'DECISION': bikeDecision,
         'PRECIP_DATA': precipData,
         'UPDATE_TIME': updateTimeStr,
-        'CURRENT_TEMP': currentTemp
+        'CURRENT_TEMP': currentTemp,
+        'COMMUTE_MORNING': morningHour,
+        'COMMUTE_EVENING': eveningHour
       };
 
       Pebble.sendAppMessage(dictionary,
-        function(e) {
+        function (e) {
           console.log('Decision and precip data sent successfully!');
         },
-        function(e) {
+        function (e) {
           console.log('Error sending decision and precip data!');
         }
       );
@@ -110,7 +123,7 @@ function getWeather() {
 
 // Listen for when the watchface is opened
 Pebble.addEventListener('ready',
-  function(e) {
+  function (e) {
     console.log('PebbleKit JS ready!');
 
     // Get the initial weather
@@ -118,9 +131,27 @@ Pebble.addEventListener('ready',
   }
 );
 
+Pebble.addEventListener('showConfiguration', function(e) {
+  Pebble.openURL(clay.generateUrl());
+});
+
+Pebble.addEventListener('webviewclosed', function(e) {
+  if (e && !e.response) {
+    return;
+  }
+  var dict = clay.getSettings(e.response);
+  
+  if (dict.COMMUTE_MORNING !== undefined) localStorage.setItem('COMMUTE_MORNING', dict.COMMUTE_MORNING.value);
+  if (dict.COMMUTE_EVENING !== undefined) localStorage.setItem('COMMUTE_EVENING', dict.COMMUTE_EVENING.value);
+  if (dict.PRECIP_THRESHOLD !== undefined) localStorage.setItem('PRECIP_THRESHOLD', dict.PRECIP_THRESHOLD.value);
+  
+  // Refetch weather with new settings
+  getWeather();
+});
+
 // Listen for when an AppMessage is received
 Pebble.addEventListener('appmessage',
-  function(e) {
+  function (e) {
     console.log('AppMessage received!');
     // Check if this is a weather refresh request
     if (e.payload['REQUEST_WEATHER']) {

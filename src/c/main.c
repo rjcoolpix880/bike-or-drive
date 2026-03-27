@@ -3,7 +3,8 @@
 static Window *s_main_window;
 static Layer *s_canvas_layer;
 static char s_bike_decision[8] = "WAIT";
-static char s_update_time[32] = "Loading...";
+static char s_update_time[32] = "fetching weather data....";
+static time_t s_last_update_time = 0;
 static uint8_t s_precip_data[24];
 static bool s_has_data = false;
 static bool s_is_connected = true;
@@ -59,7 +60,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 
   if (!s_has_data) {
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, "Loading...", fonts_get_system_font(FONT_KEY_GOTHIC_18), GRect(0, bounds.size.h/2 - 10, bounds.size.w, 30),
+    graphics_draw_text(ctx, "fetching weather data....", fonts_get_system_font(FONT_KEY_GOTHIC_18), GRect(0, bounds.size.h/2 - 10, bounds.size.w, 30),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     return;
   }
@@ -145,10 +146,12 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
   }
 
   // Update Time String
-  graphics_context_set_text_color(ctx, GColorWhite);
-  graphics_draw_text(ctx, s_update_time, fonts_get_system_font(FONT_KEY_GOTHIC_18), 
-                     GRect(0, bounds.size.h - 22, bounds.size.w, 20),
-                     GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+  if (s_last_update_time > 0 && (temp - s_last_update_time) > 30 * 60) {
+    graphics_context_set_text_color(ctx, GColorWhite);
+    graphics_draw_text(ctx, s_update_time, fonts_get_system_font(FONT_KEY_GOTHIC_18), 
+                       GRect(0, bounds.size.h - 22, bounds.size.w, 20),
+                       GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
+  }
 }
 
 static void temp_window_load(Window *window) {
@@ -225,6 +228,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   }
   if (update_tuple) {
     snprintf(s_update_time, sizeof(s_update_time), "%s", update_tuple->value->cstring);
+    s_last_update_time = time(NULL);
   }
   if (temp_tuple) {
     s_current_temp = temp_tuple->value->int32;
